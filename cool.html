@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GD Wave - Sonic Wave Edition</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            background: #040409;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            user-select: none;
+        }
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        #uiOverlay {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 30px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .scoreText {
+            color: #ffffff;
+            font-size: 28px;
+            font-weight: 900;
+            letter-spacing: 1px;
+        }
+        #scoreDisplay {
+            text-shadow: 0 0 10px #00ff77;
+        }
+        #bestDisplay {
+            text-shadow: 0 0 10px #00ffff;
+        }
+        #gameOverScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(3, 3, 7, 0.9);
+            backdrop-filter: blur(5px);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 20;
+            display: none;
+        }
+        #gameOverScreen h1 {
+            font-size: 48px;
+            color: #ff0055;
+            margin-bottom: 10px;
+            text-shadow: 0 0 15px #ff0055;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+        }
+        #gameOverScreen p {
+            font-size: 18px;
+            color: #8a8a9e;
+            margin-bottom: 25px;
+        }
+        #restartBtn {
+            padding: 14px 40px;
+            font-size: 20px;
+            font-weight: bold;
+            background: #00ff77;
+            color: #030307;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            text-transform: uppercase;
+            box-shadow: 0 0 15px rgba(0, 255, 119, 0.5);
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="gameContainer">
+        <div id="uiOverlay">
+            <div id="bestDisplay" class="scoreText">BEST: 0</div>
+            <div id="scoreDisplay" class="scoreText">0</div>
+        </div>
+        <div id="gameOverScreen">
+            <h1>Crash!</h1>
+            <p>Hold to Fly Up, Release to Fall</p>
+            <button id="restartBtn">Retry</button>
+        </div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const scoreDisplay = document.getElementById("scoreDisplay");
+        const bestDisplay = document.getElementById("bestDisplay");
+        const gameOverScreen = document.getElementById("gameOverScreen");
+        const restartBtn = document.getElementById("restartBtn");
+
+        // Audio Setup
+        const bgMusic = new Audio("sonicwave.mp3");
+        bgMusic.loop = true;
+
+        // Physics Configurations
+        const FORWARD_SPEED = 5.5;       
+        const WAVE_SPEED_Y = 5.5;        
+        const SEGMENT_WIDTH = 60; 
+
+        let wave;
+        let pathSegments = [];
+        let score = 0;
+        let highscore = parseInt(localStorage.getItem("gd_wave_killblocks_highscore")) || 0;
+        let frameCount = 0;
+        let isGameOver = false;
+        let isHolding = false;           
+
+        const PATH_MODES = ["STABLE", "UP", "DOWN", "STABLE"];
+        let currentModeIndex = 0;
+        let currentTargetCenterY = 0;
+        let segmentsSinceChange = 0;
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        class Wave {
+            constructor() {
+                this.x = 220; 
+                this.y = canvas.height / 2;
+                this.size = 13;          
+                this.trail = [];         
+            }
+
+            draw() {
+                if (!isGameOver) {
+                    this.trail.push({ x: this.x, y: this.y });
+                    if (this.trail.length > canvas.width / FORWARD_SPEED) {
+                        this.trail.shift();
+                    }
+                }
+
+                if (this.trail.length > 1) {
+                    ctx.beginPath();
+                    let currentLength = this.trail.length;
+                    for (let i = 0; i < currentLength; i++) {
+                        let trailX = this.x - (currentLength - 1 - i) * FORWARD_SPEED;
+                        if (i === 0) ctx.moveTo(trailX, this.trail[i].y);
+                        else ctx.lineTo(trailX, this.trail[i].y);
+                    }
+                    ctx.strokeStyle = "#00ff77"; 
+                    ctx.lineWidth = 4;
+                    ctx.stroke();
+                }
+
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                let angle = isHolding ? -Math.PI / 4 : Math.PI / 4;
+                ctx.rotate(angle);
+
+                ctx.beginPath();
+                ctx.moveTo(this.size * 1.5, 0); 
+                ctx.lineTo(-this.size, -this.size);
+                ctx.lineTo(-this.size + 3, 0);
+                ctx.lineTo(-this.size, this.size);
+                ctx.closePath();
+
+                ctx.fillStyle = "#00ffff";
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 2;
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            update() {
+                if (isHolding) this.y -= WAVE_SPEED_Y;
+                else this.y += WAVE_SPEED_Y;
+
+                if (this.y <= 0 || this.y >= canvas.height) {
+                    endGame();
+                }
+            }
+        }
+
+        class PathSegment {
+            constructor(startX, startTopY, startBottomY, endTopY, endBottomY, isRunway = false) {
+                this.x = startX;
+                this.startTopY = startTopY;
+                this.startBottomY = startBottomY;
+                this.endTopY = endTopY;
+                this.endBottomY = endBottomY;
+                this.passed = false;
+                this.isRunway = isRunway;
+            }
+
+            draw() {
+                ctx.lineWidth = 4;
+                ctx.fillStyle = "#0b0b18"; 
+                
+                ctx.beginPath();
+                ctx.moveTo(this.x, 0);
+                ctx.lineTo(this.x, this.startTopY);
+                ctx.lineTo(this.x + SEGMENT_WIDTH, this.endTopY);
+                ctx.lineTo(this.x + SEGMENT_WIDTH, 0);
+                ctx.closePath();
+                ctx.fill();
+
+                ctx.strokeStyle = "#00ffff";
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.startTopY);
+                ctx.lineTo(this.x + SEGMENT_WIDTH, this.endTopY);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(this.x, canvas.height);
+                ctx.lineTo(this.x, this.startBottomY);
+                ctx.lineTo(this.x + SEGMENT_WIDTH, this.endBottomY);
+                ctx.lineTo(this.x + SEGMENT_WIDTH, canvas.height);
+                ctx.closePath();
+                ctx.fill();
+
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.startBottomY);
+                ctx.lineTo(this.x + SEGMENT_WIDTH, this.endBottomY);
+                ctx.stroke();
+            }
+
+            update() {
+                this.x -= FORWARD_SPEED;
+            }
+
+            collidesWith(wave) {
+                if (wave.x >= this.x && wave.x <= this.x + SEGMENT_WIDTH) {
+                    let progress = (wave.x - this.x) / SEGMENT_WIDTH;
+                    let ceilingY = this.startTopY + (this.endTopY - this.startTopY) * progress;
+                    let floorY = this.startBottomY + (this.endBottomY - this.startBottomY) * progress;
+
+                    if (wave.y - 4 <= ceilingY || wave.y + 4 >= floorY) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        function generateNextSegment(startX, forceRunway = false) {
+            let lastSegment = pathSegments[pathSegments.length - 1];
+            let startTopY = lastSegment ? lastSegment.endTopY : 40;
+            let startBottomY = lastSegment ? lastSegment.endBottomY : canvas.height - 40;
+
+            if (forceRunway) {
+                return new PathSegment(startX, 40, canvas.height - 40, 40, canvas.height - 40, true);
+            }
+
+            segmentsSinceChange++;
+            if (segmentsSinceChange > 3) {
+                currentModeIndex = Math.floor(Math.random() * PATH_MODES.length);
+                segmentsSinceChange = 0;
+                
+                let mode = PATH_MODES[currentModeIndex];
+                if (mode === "UP") currentTargetCenterY = Math.max(150, currentTargetCenterY - 80);
+                else if (mode === "DOWN") currentTargetCenterY = Math.min(canvas.height - 150, currentTargetCenterY + 80);
+            }
+
+            let currentCenterY = (startTopY + startBottomY) / 2;
+            let nextCenterY = currentCenterY;
+
+            if (currentCenterY < currentTargetCenterY) nextCenterY = currentCenterY + SEGMENT_WIDTH;
+            else if (currentCenterY > currentTargetCenterY) nextCenterY = currentCenterY - SEGMENT_WIDTH;
+
+            let gapSize = 160; 
+            let endTopY = nextCenterY - (gapSize / 2);
+            let endBottomY = nextCenterY + (gapSize / 2);
+
+            return new PathSegment(startX, startTopY, startBottomY, endTopY, endBottomY, false);
+        }
+
+        function init() {
+            resizeCanvas();
+            wave = new Wave();
+            pathSegments = [];
+            score = 0;
+            frameCount = 0;
+            isGameOver = false;
+            isHolding = false;
+            
+            scoreDisplay.textContent = score;
+            bestDisplay.textContent = "BEST: " + highscore;
+            gameOverScreen.style.display = "none";
+            currentTargetCenterY = canvas.height / 2;
+
+            // Reset and play the music from the beginning
+            bgMusic.currentTime = 0;
+            bgMusic.play().catch(err => {
+                console.log("Audio autoplay blocked. Tap or press Space to trigger music.");
+            });
+
+            let currentX = 0;
+            let runwayEndDistance = wave.x + (60 * FORWARD_SPEED);
+
+            while (currentX < runwayEndDistance) {
+                pathSegments.push(generateNextSegment(currentX, true));
+                currentX += SEGMENT_WIDTH;
+            }
+
+            while (currentX < canvas.width + SEGMENT_WIDTH) {
+                pathSegments.push(generateNextSegment(currentX, false));
+                currentX += SEGMENT_WIDTH;
+            }
+        }
+
+        function endGame() {
+            isGameOver = true;
+            
+            // Stop music on death
+            bgMusic.pause();
+
+            if (score > highscore) {
+                highscore = score;
+                localStorage.setItem("gd_wave_killblocks_highscore", highscore);
+            }
+            gameOverScreen.style.display = "flex";
+        }
+
+        function drawBackground() {
+            ctx.fillStyle = "#040409";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function update() {
+            drawBackground();
+
+            let lastSeg = pathSegments[pathSegments.length - 1];
+            if (lastSeg && lastSeg.x + SEGMENT_WIDTH <= canvas.width + SEGMENT_WIDTH) {
+                pathSegments.push(generateNextSegment(lastSeg.x + SEGMENT_WIDTH, false));
+            }
+
+            for (let i = pathSegments.length - 1; i >= 0; i--) {
+                pathSegments[i].update();
+                pathSegments[i].draw();
+
+                if (pathSegments[i].collidesWith(wave)) {
+                    endGame();
+                }
+
+                if (!pathSegments[i].passed && !pathSegments[i].isRunway && pathSegments[i].x + SEGMENT_WIDTH < wave.x) {
+                    score++;
+                    scoreDisplay.textContent = score;
+                    pathSegments[i].passed = true;
+                }
+
+                if (pathSegments[i].x + SEGMENT_WIDTH < 0) {
+                    pathSegments.splice(i, 1);
+                }
+            }
+
+            wave.update();
+            wave.draw();
+
+            frameCount++;
+
+            if (!isGameOver) {
+                requestAnimationFrame(update);
+            }
+        }
+
+        function press(e) {
+            if (e && e.code === 'Space') e.preventDefault();
+            
+            // Explicitly try playing music on initial interaction to bypass browser autoplay blocks
+            if (bgMusic.paused && !isGameOver) {
+                bgMusic.play().catch(() => {});
+            }
+
+            if (isGameOver) {
+                init();
+                update();
+            } else {
+                isHolding = true;
+            }
+        }
+
+        function release() {
+            isHolding = false;
+        }
+
+        window.addEventListener("keydown", (e) => {
+            if (e.code === 'Space' && !isHolding) press(e);
+        });
+        window.addEventListener("keyup", (e) => {
+            if (e.code === 'Space') release();
+        });
+
+        window.addEventListener("mousedown", (e) => {
+            if (e.target === restartBtn) return;
+            e.preventDefault();
+            press(e);
+        });
+        window.addEventListener("mouseup", release);
+
+        window.addEventListener("touchstart", (e) => {
+            if (e.target === restartBtn) return;
+            e.preventDefault();
+            press(e);
+        });
+        window.addEventListener("touchend", release);
+
+        restartBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            init();
+            update();
+        });
+
+        init();
+        update();
+    </script>
+</body>
+</html>
